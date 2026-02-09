@@ -1,210 +1,166 @@
 from sqlalchemy import (
-    Column, String, Text, DateTime, Boolean, Enum, 
-    ForeignKey, Integer, BigInteger, func, CheckConstraint,Index
+    Column, String, Text, DateTime, Boolean, Integer,
+    ForeignKey, Index, CheckConstraint
 )
-from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship, validates
-import uuid
 from datetime import datetime, timezone
 from db.db import Base
-import enum
 
-# Enums as Python enums
-class ChatType(str, enum.Enum):
-    DIRECT = "direct"
-    GROUP = "group"
-
-class ParticipantRole(str, enum.Enum):
-    ADMIN = "admin"
-    MEMBER = "member"
-
-class MessageType(str, enum.Enum):
-    TEXT = "text"
-    IMAGE = "image"
-    VIDEO = "video"
-    AUDIO = "audio"
-    FILE = "file"
-
-class ReceiptStatus(str, enum.Enum):
-    SENT = "sent"
-    DELIVERED = "delivered"
-    READ = "read"
 
 class User(Base):
     __tablename__ = "users"
     
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    username = Column(String(50), unique=True, nullable=False, index=True)
-    public_key = Column(Text, nullable=False)  # For Nostr/E2EE
-    created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
+    user_id = Column(String(16), primary_key=True)
+    encrypted_username = Column(Text, nullable=False)
+    verification_hash = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.now(timezone.utc))
+    last_seen = Column(DateTime(timezone=True), nullable=True)
+    encryption_key_salt = Column(Text, nullable=False)
     
     # Relationships
-    sent_messages = relationship("Message", back_populates="sender", foreign_keys="Message.sender_id")
-    chat_participants = relationship("ChatParticipant", back_populates="user")
-    message_receipts = relationship("MessageReceipt", back_populates="user")
+    sent_messages = relationship(
+        "Message", 
+        back_populates="sender", 
+        foreign_keys="Message.sender_id"
+    )
+    received_messages = relationship(
+        "Message", 
+        back_populates="recipient", 
+        foreign_keys="Message.recipient_id"
+    )
+    conversations_as_user = relationship(
+        "Conversation",
+        back_populates="user",
+        foreign_keys="Conversation.user_id"
+    )
+    conversations_as_other = relationship(
+        "Conversation",
+        back_populates="other_user",
+        foreign_keys="Conversation.other_user_id"
+    )
+    sessions = relationship("UserSession", back_populates="user", cascade="all, delete-orphan")
     
-    @validates('username')
-    def validate_username(self, key, username):
-        if len(username) < 3 or len(username) > 50:
-            raise ValueError("Username must be between 3 and 50 characters")
-        return username
+    @validates('user_id')
+    def validate_user_id(self, key, user_id):
+        if len(user_id) != 16:
+            raise ValueError("user_id must be exactly 16 characters")
+        return user_id
 
-class Chat(Base):
-    __tablename__ = "chats"
-    
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    type = Column(Enum(ChatType), nullable=False, default=ChatType.DIRECT)
-    created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
-    last_message_at = Column(DateTime(timezone=True), nullable=True)
-    
-    # Relationships
-    participants = relationship("ChatParticipant", back_populates="chat", cascade="all, delete-orphan")
-    messages = relationship("Message", back_populates="chat", cascade="all, delete-orphan")
-    
-    __table_args__ = (
-        CheckConstraint(
-            "type IN ('direct', 'group')", 
-            name="check_chat_type"
-        ),
-    )
-
-class ChatParticipant(Base):
-    __tablename__ = "chat_participants"
-    
-    chat_id = Column(
-        UUID(as_uuid=True), 
-        ForeignKey("chats.id", ondelete="CASCADE"), 
-        primary_key=True
-    )
-    user_id = Column(
-        UUID(as_uuid=True), 
-        ForeignKey("users.id", ondelete="CASCADE"), 
-        primary_key=True
-    )
-    role = Column(Enum(ParticipantRole), nullable=False, default=ParticipantRole.MEMBER)
-    joined_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
-    left_at = Column(DateTime(timezone=True), nullable=True)
-    
-    # Relationships
-    chat = relationship("Chat", back_populates="participants")
-    user = relationship("User", back_populates="chat_participants")
-    
-    @validates('role')
-    def validate_role(self, key, role):
-        if self.chat and self.chat.type == ChatType.DIRECT:
-            if role != ParticipantRole.MEMBER:
-                raise ValueError("Direct chats can only have members")
-        return role
 
 class Message(Base):
     __tablename__ = "messages"
     
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    chat_id = Column(
-        UUID(as_uuid=True), 
-        ForeignKey("chats.id", ondelete="CASCADE"), 
-        nullable=False,
-        index=True
-    )
+    message_id = Column(String(16), primary_key=True)
     sender_id = Column(
-        UUID(as_uuid=True), 
-        ForeignKey("users.id", ondelete="CASCADE"), 
+        String(16),
+        ForeignKey("users.user_id", ondelete="CASCADE"),
         nullable=False
     )
-    type = Column(Enum(MessageType), nullable=False, default=MessageType.TEXT)
-    content = Column(Text, nullable=False)  # Encrypted payload
-    reply_to = Column(UUID(as_uuid=True), ForeignKey("messages.id"), nullable=True)
-    created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
-    edited_at = Column(DateTime(timezone=True), nullable=True)
-    deleted_at = Column(DateTime(timezone=True), nullable=True)
+    recipient_id = Column(
+        String(16),
+        ForeignKey("users.user_id", ondelete="CASCADE"),
+        nullable=False
+    )
+    encrypted_content = Column(Text, nullable=False)
+    encrypted_metadata = Column(Text, nullable=True)
+    timestamp = Column(DateTime(timezone=True), nullable=False, default=datetime.now(timezone.utc))
+    read_status = Column(Boolean, nullable=False, default=False)
+    thread_id = Column(String(16), nullable=True)
     
     # Relationships
-    chat = relationship("Chat", back_populates="messages")
     sender = relationship("User", back_populates="sent_messages", foreign_keys=[sender_id])
-    media = relationship("Media", back_populates="message", cascade="all, delete-orphan")
-    receipts = relationship("MessageReceipt", back_populates="message", cascade="all, delete-orphan")
-    parent_message = relationship("Message", remote_side=[id], foreign_keys=[reply_to], post_update=True)
+    recipient = relationship("User", back_populates="received_messages", foreign_keys=[recipient_id])
     
     __table_args__ = (
-        CheckConstraint(
-            "type IN ('text', 'image', 'video', 'audio', 'file')", 
-            name="check_message_type"
-        ),
-        Index('idx_chat_created', 'chat_id', 'created_at'),
+        Index('idx_conversation', 'sender_id', 'recipient_id', 'timestamp'),
+        Index('idx_unread', 'recipient_id', 'read_status'),
+        CheckConstraint("sender_id != recipient_id", name="check_different_users"),
     )
     
-    @validates('content')
+    @validates('message_id')
+    def validate_message_id(self, key, message_id):
+        if len(message_id) != 16:
+            raise ValueError("message_id must be exactly 16 characters")
+        return message_id
+    
+    @validates('encrypted_content')
     def validate_content(self, key, content):
         if not content or len(content.strip()) == 0:
             raise ValueError("Message content cannot be empty")
         return content
 
-class MessageReceipt(Base):
-    __tablename__ = "message_receipts"
+
+class Conversation(Base):
+    __tablename__ = "conversations"
     
-    message_id = Column(
-        UUID(as_uuid=True), 
-        ForeignKey("messages.id", ondelete="CASCADE"), 
-        primary_key=True
-    )
     user_id = Column(
-        UUID(as_uuid=True), 
-        ForeignKey("users.id", ondelete="CASCADE"), 
+        String(16),
+        ForeignKey("users.user_id", ondelete="CASCADE"),
         primary_key=True
     )
-    status = Column(Enum(ReceiptStatus), nullable=False, default=ReceiptStatus.SENT)
-    updated_at = Column(DateTime(timezone=True), default=func.now(), onupdate=func.now(), nullable=False)
+    other_user_id = Column(
+        String(16),
+        ForeignKey("users.user_id", ondelete="CASCADE"),
+        primary_key=True
+    )
+    last_message_id = Column(String(16), nullable=True)
+    last_message_timestamp = Column(DateTime(timezone=True), nullable=True)
+    unread_count = Column(Integer, nullable=False, default=0)
+    encrypted_summary = Column(Text, nullable=True)
     
     # Relationships
-    message = relationship("Message", back_populates="receipts")
-    user = relationship("User", back_populates="message_receipts")
+    user = relationship("User", back_populates="conversations_as_user", foreign_keys=[user_id])
+    other_user = relationship("User", back_populates="conversations_as_other", foreign_keys=[other_user_id])
     
     __table_args__ = (
-        CheckConstraint(
-            "status IN ('sent', 'delivered', 'read')", 
-            name="check_receipt_status"
-        ),
+        Index('idx_recent', 'user_id', 'last_message_timestamp'),
+        CheckConstraint("user_id != other_user_id", name="check_different_conversation_users"),
     )
-
-class Media(Base):
-    __tablename__ = "media"
     
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    message_id = Column(
-        UUID(as_uuid=True), 
-        ForeignKey("messages.id", ondelete="CASCADE"), 
-        nullable=False,
-        index=True
+    @validates('unread_count')
+    def validate_unread_count(self, key, count):
+        if count < 0:
+            raise ValueError("Unread count cannot be negative")
+        return count
+
+
+class UserSession(Base):
+    __tablename__ = "sessions"
+    
+    session_id = Column(String(32), primary_key=True)
+    user_id = Column(
+        String(16),
+        ForeignKey("users.user_id", ondelete="CASCADE"),
+        nullable=False
     )
-    url = Column(Text, nullable=False)
-    mime_type = Column(String(100), nullable=False)
-    size = Column(BigInteger, nullable=False)  # Size in bytes
-    width = Column(Integer, nullable=True)
-    height = Column(Integer, nullable=True)
+    encryption_key_hash = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.now(timezone.utc))
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    last_activity = Column(DateTime(timezone=True), nullable=False, default=datetime.now(timezone.utc))
     
     # Relationships
-    message = relationship("Message", back_populates="media")
-
-class Contact(Base):
-    __tablename__ = "contacts"
-    
-    owner_id = Column(
-        UUID(as_uuid=True), 
-        ForeignKey("users.id", ondelete="CASCADE"), 
-        primary_key=True
-    )
-    contact_user_id = Column(
-        UUID(as_uuid=True), 
-        ForeignKey("users.id", ondelete="CASCADE"), 
-        primary_key=True
-    )
-    alias = Column(String(100), nullable=True)
-    blocked = Column(Boolean, default=False, nullable=False)
-    
-    # Relationships
-    owner = relationship("User", foreign_keys=[owner_id])
-    contact = relationship("User", foreign_keys=[contact_user_id])
+    user = relationship("User", back_populates="sessions")
     
     __table_args__ = (
-        CheckConstraint("owner_id != contact_user_id", name="check_self_contact"),
+        Index('idx_expiry', 'expires_at'),
     )
+    
+    @validates('session_id')
+    def validate_session_id(self, key, session_id):
+        if len(session_id) != 32:
+            raise ValueError("session_id must be exactly 32 characters")
+        return session_id
+
+
+class Config(Base):
+    __tablename__ = "config"
+    
+    config_key = Column(String(50), primary_key=True)
+    config_value = Column(Text, nullable=False)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=datetime.now(timezone.utc))
+    
+    @validates('config_key')
+    def validate_config_key(self, key, config_key):
+        if len(config_key) > 50:
+            raise ValueError("config_key must be 50 characters or less")
+        return config_key

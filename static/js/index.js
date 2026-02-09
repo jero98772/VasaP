@@ -7,7 +7,10 @@ function Index() {
 
     return (
         <div className="container index-container">
-            <div className="logo">VassaPP</div>
+            <div className="header-brand">
+                <div className="brand-logo">V</div>
+                <div className="logo">VassaPP</div>
+            </div>
             <div className="tagline">// End-to-End Encrypted Communication //</div>
             
             <div className="security-badge">
@@ -26,7 +29,7 @@ function Index() {
                     </div>
                 </div>
 
-                <div className="option-card" onClick={() => navigateTo('/chat')}>
+                <div className="option-card" onClick={() => navigateTo('/chat/list')}>
                     <div className="option-icon">💬</div>
                     <div className="option-title">ANONYMOUS CHAT</div>
                     <div className="option-description">
